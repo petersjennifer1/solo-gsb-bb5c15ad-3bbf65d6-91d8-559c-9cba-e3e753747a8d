@@ -12,6 +12,7 @@ from . import calibration as cal
 from . import condensation as cond
 from . import excursions as exc
 from . import incidents as inc
+from . import outliers as out
 from . import propagation as prop
 from . import recovery as rec
 from . import segmentation as seg
@@ -34,6 +35,8 @@ from .schemas import (
     PropagationLagOut,
     PropagationOut,
     ReadingIn,
+    ReadingOutlierOut,
+    ReadingOutliersOut,
     RecoveryBaselineOut,
     RecoveryOut,
     SegmentOut,
@@ -778,6 +781,70 @@ def build_case_recovery(
         max_humidity_deviation=result.max_humidity_deviation,
         max_humidity_deviation_ts=result.max_humidity_deviation_ts,
         reason=result.reason,
+    )
+
+
+# ---------- 展柜采集质量审计（孤立异常读数） ----------
+
+
+def build_case_reading_outliers(
+    db: Session,
+    device_sn: str,
+    *,
+    window_size: int,
+    k: float,
+    temp_min_delta: float,
+    humidity_min_delta: float,
+    max_gap_seconds: float,
+) -> ReadingOutliersOut | None:
+    """连续段内邻窗中位数 + MAD 的孤立异常读数扫描（只读，不落库）。
+
+    设备没有任何读数时返回 ``None``（由上层判 404）。邻点只在同一
+    连续段内选取，判定绝不跨越断档；不修改读数、分段或版本号。
+    """
+    samples = _load_samples(db, device_sn)
+    if not samples:
+        return None
+
+    scan = out.detect_reading_outliers(
+        samples,
+        window_size=window_size,
+        k=k,
+        temp_min_delta=temp_min_delta,
+        humidity_min_delta=humidity_min_delta,
+        max_gap_seconds=max_gap_seconds,
+    )
+
+    outliers: list[ReadingOutlierOut] = []
+    for o in scan.outliers:
+        per_dim = {f.dimension: f for f in o.findings}
+        temp = per_dim.get(out.TEMPERATURE)
+        hum = per_dim.get(out.HUMIDITY)
+        outliers.append(
+            ReadingOutlierOut(
+                ts=o.ts,
+                temperature=o.temperature,
+                humidity=o.humidity,
+                dimensions=[f.dimension for f in o.findings],
+                temperature_median=temp.median if temp else None,
+                temperature_deviation=temp.deviation if temp else None,
+                humidity_median=hum.median if hum else None,
+                humidity_deviation=hum.deviation if hum else None,
+            )
+        )
+
+    return ReadingOutliersOut(
+        device_sn=device_sn,
+        window_size=window_size,
+        k=k,
+        temp_min_delta=temp_min_delta,
+        humidity_min_delta=humidity_min_delta,
+        max_gap_seconds=max_gap_seconds,
+        sample_count=scan.sample_count,
+        segment_count=scan.segment_count,
+        evaluated_count=scan.evaluated_count,
+        outlier_count=len(outliers),
+        outliers=outliers,
     )
 
 

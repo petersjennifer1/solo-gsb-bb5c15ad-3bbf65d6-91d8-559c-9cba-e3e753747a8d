@@ -393,6 +393,50 @@ class CondensationRiskOut(BaseModel):
     windows: list[CondensationWindowOut]
 
 
+OutlierDimension = Literal["temperature", "humidity"]
+
+
+class ReadingOutlierOut(BaseModel):
+    ts: dt.datetime = Field(..., description="疑点读数时间戳（UTC）")
+    temperature: float = Field(..., description="原始温度读数（°C）")
+    humidity: float = Field(..., description="原始湿度读数（%RH）")
+    dimensions: list[OutlierDimension] = Field(
+        ..., description="被标记的异常维度（temperature 在前，可多个）"
+    )
+    temperature_median: float | None = Field(
+        None, description="温度邻点中位数（°C）；温度未被标记时为 null"
+    )
+    temperature_deviation: float | None = Field(
+        None, description="温度原值相对邻点中位数的绝对偏差（°C）；温度未被标记时为 null"
+    )
+    humidity_median: float | None = Field(
+        None, description="湿度邻点中位数（%RH）；湿度未被标记时为 null"
+    )
+    humidity_deviation: float | None = Field(
+        None, description="湿度原值相对邻点中位数的绝对偏差（%RH）；湿度未被标记时为 null"
+    )
+
+
+class ReadingOutliersOut(BaseModel):
+    device_sn: str
+    window_size: int = Field(..., description="每侧最多邻点数量（2…50）")
+    k: float = Field(..., description="异常判定倍数阈值（> 0）")
+    temp_min_delta: float = Field(..., description="温度尺度下限（°C，> 0）")
+    humidity_min_delta: float = Field(..., description="湿度尺度下限（%RH，> 0）")
+    max_gap_seconds: float = Field(
+        ..., description="允许的最大相邻读数间隔（秒）；超过则切断连续段"
+    )
+    sample_count: int = Field(..., description="参与扫描的已合并读数总数")
+    segment_count: int = Field(..., description="按 max_gap_seconds 切出的连续段数量")
+    evaluated_count: int = Field(
+        ..., description="两侧邻点均达到最低数量、实际参与判定的读数数量"
+    )
+    outlier_count: int
+    outliers: list[ReadingOutlierOut] = Field(
+        ..., description="按时间升序排列的孤立异常疑点"
+    )
+
+
 class HealthOut(BaseModel):
     status: str
     db: str

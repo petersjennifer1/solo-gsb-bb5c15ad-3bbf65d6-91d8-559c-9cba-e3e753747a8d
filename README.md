@@ -12,7 +12,9 @@
 Magnus 公式露点与表面温度冷凝裕量的**冷凝风险窗口**检测
 （condensation risk，只读），以及**展柜扰动恢复分析**（recovery）：
 以事件前窗口温湿度中位数为基线，事件后按分段线性曲线精确求双维
-进入/离开容差带交点，两维同时在带连续保持达标方判恢复（只读）。
+进入/离开容差带交点，两维同时在带连续保持达标方判恢复（只读），以及
+**展柜采集质量审计**（reading outliers）：在连续段内以邻窗中位数与
+MAD 尺度定位孤立异常读数（只读）。
 
 ---
 
@@ -368,6 +370,74 @@ curl 'http://localhost:8080/api/v1/cases/CASE-007/recovery?event_ts=2026-09-01T0
 `detail` 中给出实际样本数、要求数量与基线窗口；展柜没有读数返回
 `404`。接口**只读**：不写库、不改版本号。
 
+### 13. 展柜采集质量审计（孤立异常读数）
+
+`GET /api/v1/cases/{sn}/reading-outliers` 基于**已合并**的温湿度读数，
+只读定位**孤立异常值**（传感器瞬时跳刺等采集质量问题），不修改读数、
+分段或版本号：
+
+1. **连续段**：相邻读数间隔**大于** `max_gap_seconds` 时切断序列
+   （恰好等于仍连续），后续所有邻点选取**绝不跨越断档**；
+2. **邻窗**：对每个读数，仅取**本连续段内**左侧最多 `window_size` 个、
+   右侧最多 `window_size` 个邻点（**排除自身**）；任一侧邻点不足 2 个
+   时该点**不参与判定**（段首段尾与过短的段天然跳过）；
+3. **分维判定**：温度、湿度各自独立计算邻点中位数与
+   `MAD = median(|邻点 − 中位数|)`，尺度取
+   `max(1.4826 × MAD, 该维 min_delta)`（`1.4826` 为正态一致性常数；
+   `min_delta` 为邻点完全相同时的尺度下限，避免零尺度）；原值相对
+   中位数的绝对偏差**严格大于** `k × 尺度` 时标记该维度
+   （恰好等于不标记）；
+4. 任一维度被标记即为**疑点**，按时间升序返回，附原值、异常维度及
+   各被标记维度的邻点中位数与绝对偏差。
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `window_size` | 否 | `5` | 每侧最多邻点数量（**2…50**，含端点）；越界返回 `422` |
+| `k` | 否 | `3.0` | 异常判定倍数阈值（**> 0**）；非正返回 `422` |
+| `temp_min_delta` | 否 | `0.1` | 温度尺度下限（°C，**> 0**）；非正返回 `422` |
+| `humidity_min_delta` | 否 | `0.5` | 湿度尺度下限（%RH，**> 0**）；非正返回 `422` |
+| `max_gap_seconds` | 否 | `600` | 允许的最大相邻读数间隔（秒，0 < x ≤ 86400）；超过则切断连续段 |
+
+```bash
+curl 'http://localhost:8080/api/v1/cases/CASE-007/reading-outliers?window_size=5&k=3.0&temp_min_delta=0.1&humidity_min_delta=0.5&max_gap_seconds=600'
+```
+
+响应示例（第 5 分钟出现一次孤立温度跳刺，湿度正常）：
+
+```json
+{
+  "device_sn": "CASE-007",
+  "window_size": 5,
+  "k": 3.0,
+  "temp_min_delta": 0.1,
+  "humidity_min_delta": 0.5,
+  "max_gap_seconds": 600.0,
+  "sample_count": 10,
+  "segment_count": 1,
+  "evaluated_count": 6,
+  "outlier_count": 1,
+  "outliers": [
+    {
+      "ts": "2026-09-01T00:05:00Z",
+      "temperature": 35.0,
+      "humidity": 50.0,
+      "dimensions": ["temperature"],
+      "temperature_median": 20.0,
+      "temperature_deviation": 15.0,
+      "humidity_median": null,
+      "humidity_deviation": null
+    }
+  ]
+}
+```
+
+`sample_count` 为参与扫描的已合并读数总数，`segment_count` 为按
+`max_gap_seconds` 切出的连续段数量，`evaluated_count` 为两侧邻点均
+达到 2 个、实际参与判定的读数数量；未被标记维度的中位数/偏差字段为
+`null`。展柜没有读数返回 `404`；`window_size` 小于 2 或大于 50、
+`k`、两维 `min_delta`、`max_gap_seconds` 非正均返回 `422`。接口
+**只读**：不写库、不改版本号。
+
 ---
 
 ## 接口一览
@@ -383,6 +453,7 @@ curl 'http://localhost:8080/api/v1/cases/CASE-007/recovery?event_ts=2026-09-01T0
 | GET  | `/api/v1/cases/{sn}/calibrated-timeline` | 锚点参考值校正的只读时间线：分维偏移线性插值，支持 `start` / `end` 过滤 |
 | GET  | `/api/v1/cases/{sn}/condensation-risk` | 冷凝风险：Magnus 露点 + 表面温度裕量，线性插值精确窗口、断档/零湿度断开 |
 | GET  | `/api/v1/cases/{sn}/recovery` | 扰动恢复：事件前中位数基线 + 事件后双维容差带精确交点，连续保持达标方判恢复（只读） |
+| GET  | `/api/v1/cases/{sn}/reading-outliers` | 采集质量审计：连续段内邻窗中位数 + MAD 定位孤立异常读数（只读） |
 | GET  | `/api/v1/incidents` | 跨展柜共模突变：非基线段首候选窗 + 全局最优互不重叠选择 |
 | GET  | `/api/v1/propagation` | 跨展柜环境传播：重叠时段固定步长插值 + 正负时滞皮尔逊相关（只读） |
 | POST | `/api/v1/anchors` | 登记/更新锚点并重放 |
@@ -863,4 +934,8 @@ start/end 过滤、无有效锚点偏移为 0、未对齐锚点忽略、只读�
 `max_gap` 断档重新计时与等于连续、`hold_seconds` 含等于确认与
 `recovered_at` 反解、任一维出带即中断重新计时、四类未恢复原因、
 事件后读数数目与分维最大偏差只统计严格晚于事件的读数且并列取最早、
-正数/时间参数 422、无读数 404、只读不改库、确定性）。
+正数/时间参数 422、无读数 404、只读不改库、确定性），以及
+**采集质量审计**（连续段切断与等于连续、邻窗只取本段内左右各
+window_size 个且排除自身、任一侧不足 2 点不判、分维中位数与 MAD
+尺度（min_delta 下限与严格大于判定）、断档不跨段取邻点、按时间
+排序与确定性、参数校验 422、未知展柜 404、只读不改库）。
