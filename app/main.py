@@ -29,6 +29,7 @@ from .schemas import (
     IngestSummary,
     PropagationOut,
     ReadingIn,
+    ReadingOutliersOut,
     RecoveryOut,
     ReplayPreviewResponse,
     SegmentationOut,
@@ -66,9 +67,10 @@ app = FastAPI(
         "检测（线性插值阈值交点、断档/零湿度断开、最短持续过滤，只读）；"
         "并提供展柜扰动恢复分析：以事件前温湿度中位数为基线，事件后按分段"
         "线性曲线精确求双维进入/离开容差带交点，两维同时在带连续保持达标"
-        "方判恢复（只读）。"
+        "方判恢复（只读）；并提供展柜采集质量审计：按断档切段，以邻点"
+        "中位数与 MAD 稳健尺度定位孤立异常温湿度读数（只读）。"
     ),
-    version="1.7.0",
+    version="1.8.0",
     lifespan=lifespan,
 )
 
@@ -507,6 +509,59 @@ def get_recovery(
                 "baseline_window_end": exc.window_end.isoformat(),
             },
         )
+
+
+# ---------- 展柜采集质量审计：孤立异常值 ----------
+
+
+@app.get(
+    "/api/v1/cases/{device_sn}/reading-outliers",
+    response_model=ReadingOutliersOut,
+    tags=["cases"],
+    summary="采集质量审计：断档切段 + 邻点中位数/MAD 稳健尺度定位孤立异常读数（只读）",
+)
+def get_reading_outliers(
+    device_sn: str,
+    window_size: int = Query(
+        ...,
+        ge=2,
+        le=50,
+        description="每点左右两侧各取的最多邻点数（不含自身）；取值范围 2…50",
+    ),
+    k: float = Query(
+        ...,
+        gt=0.0,
+        description="命中阈值倍数（必须为正）：|原值 − 邻点中位数| 严格大于 k×尺度 才标记",
+    ),
+    min_temperature_delta: float = Query(
+        ...,
+        gt=0.0,
+        description="温度维最小可判偏差（°C，必须为正）：尺度 = max(1.4826×MAD, 该值)",
+    ),
+    min_humidity_delta: float = Query(
+        ...,
+        gt=0.0,
+        description="湿度维最小可判偏差（%RH，必须为正）：尺度 = max(1.4826×MAD, 该值)",
+    ),
+    max_gap_seconds: float = Query(
+        600.0,
+        gt=0.0,
+        description="允许的最大相邻读数间隔（秒，必须为正）；超过则切断序列，邻点不跨段取",
+    ),
+    db: Session = Depends(get_db),
+):
+    out = services.build_case_reading_outliers(
+        db,
+        device_sn,
+        window_size=window_size,
+        k=k,
+        min_temperature_delta=min_temperature_delta,
+        min_humidity_delta=min_humidity_delta,
+        max_gap_seconds=max_gap_seconds,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail="展柜不存在或尚无读数")
+    return out
 
 
 # ---------- 跨展柜共模突变 ----------

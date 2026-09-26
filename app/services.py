@@ -12,6 +12,7 @@ from . import calibration as cal
 from . import condensation as cond
 from . import excursions as exc
 from . import incidents as inc
+from . import outliers as ol
 from . import propagation as prop
 from . import recovery as rec
 from . import segmentation as seg
@@ -34,6 +35,9 @@ from .schemas import (
     PropagationLagOut,
     PropagationOut,
     ReadingIn,
+    ReadingOutlierDimensionOut,
+    ReadingOutlierOut,
+    ReadingOutliersOut,
     RecoveryBaselineOut,
     RecoveryOut,
     SegmentOut,
@@ -778,6 +782,65 @@ def build_case_recovery(
         max_humidity_deviation=result.max_humidity_deviation,
         max_humidity_deviation_ts=result.max_humidity_deviation_ts,
         reason=result.reason,
+    )
+
+
+# ---------- 展柜采集质量审计：孤立异常值 ----------
+
+
+def build_case_reading_outliers(
+    db: Session,
+    device_sn: str,
+    window_size: int,
+    k: float,
+    min_temperature_delta: float,
+    min_humidity_delta: float,
+    max_gap_seconds: float,
+) -> ReadingOutliersOut | None:
+    """基于已合并读数的邻点中位数/MAD 孤立异常值定位（只读，不落库）。
+
+    设备没有任何读数时返回 ``None``（由上层判 404）。断档切段、邻点窗、
+    尺度与命中规则全部委托 :mod:`app.outliers`。
+    """
+    samples = _load_samples(db, device_sn)
+    if not samples:
+        return None
+
+    result = ol.compute_reading_outliers(
+        samples,
+        window_size=window_size,
+        k=k,
+        min_temperature_delta=min_temperature_delta,
+        min_humidity_delta=min_humidity_delta,
+        max_gap_seconds=max_gap_seconds,
+    )
+    return ReadingOutliersOut(
+        device_sn=device_sn,
+        window_size=window_size,
+        k=k,
+        min_temperature_delta=min_temperature_delta,
+        min_humidity_delta=min_humidity_delta,
+        max_gap_seconds=max_gap_seconds,
+        sample_count=result.sample_count,
+        segment_count=result.segment_count,
+        evaluated_count=result.evaluated_count,
+        outlier_count=len(result.outliers),
+        outliers=[
+            ReadingOutlierOut(
+                ts=o.ts,
+                temperature=o.temperature,
+                humidity=o.humidity,
+                dimensions=[
+                    ReadingOutlierDimensionOut(
+                        dimension=d.dimension,
+                        median=d.median,
+                        deviation=d.deviation,
+                    )
+                    for d in o.dimensions
+                ],
+            )
+            for o in result.outliers
+        ],
     )
 
 
